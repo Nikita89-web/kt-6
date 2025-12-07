@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Умный загрузчик файлов</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <h1>Умный загрузчик файлов</h1>
+    
+    <div id="drop-area">
+        <p>Перетащите сюда текстовый файл (.txt)</p>
+        <input type="file" id="file-input">
+    </div>
+    
+    <div id="file-info">
+        <h3>Информация о файле:</h3>
+        <p>Имя файла: <span id="filename"></span></p>
+        <p>Размер: <span id="filesize"></span> байт</p>
+        <button id="process-btn">Обработать файл</button>
+        <button id="clear-btn">Очистить</button>
+    </div>
+    
+    <div id="results">
+        <h2>Результаты:</h2>
+        <p>Всего слов: <span id="word-count">0</span></p>
+        <p>Уникальных слов: <span id="unique-words">0</span></p>
+        <p>Время обработки: <span id="time">0</span> мс</p>
+    </div>
+    
+    <div id="websocket-area">
+        <h2>WebSocket соединение</h2>
+        <p>Статус: <span id="ws-status">Не подключено</span></p>
+        <button id="connect-btn">Подключиться</button>
+        <button id="disconnect-btn">Отключиться</button>
+        <div id="messages"></div>
+    </div>
+    
+    <div id="notification-area">
+        <h2>Уведомления</h2>
+        <button id="notification-btn">Разрешить уведомления</button>
+        <p id="notification-text"></p>
+    </div>
+
+    <script>
+        var dropArea = document.getElementById('drop-area');
+        var fileInput = document.getElementById('file-input');
+        var fileInfo = document.getElementById('file-info');
+        var processBtn = document.getElementById('process-btn');
+        var clearBtn = document.getElementById('clear-btn');
+        var wordCount = document.getElementById('word-count');
+        var uniqueWords = document.getElementById('unique-words');
+        var time = document.getElementById('time');
+        
+        var connectBtn = document.getElementById('connect-btn');
+        var disconnectBtn = document.getElementById('disconnect-btn');
+        var wsStatus = document.getElementById('ws-status');
+        var messagesDiv = document.getElementById('messages');
+        
+        var notificationBtn = document.getElementById('notification-btn');
+        var notificationText = document.getElementById('notification-text');
+        
+        var currentFile = null;
+        var fileText = '';
+        var worker = null;
+        var ws = null;
+        var notificationAllowed = false;
+        
+        window.onload = function() {
+            console.log('Страница загружена');
+            
+            if ('Notification' in window) {
+                if (Notification.permission === 'granted') {
+                    notificationAllowed = true;
+                    notificationText.textContent = 'Уведомления разрешены';
+                    notificationBtn.style.display = 'none';
+                } else if (Notification.permission === 'denied') {
+                    notificationText.textContent = 'Уведомления запрещены';
+                    notificationBtn.style.display = 'none';
+                }
+            } else {
+                notificationText.textContent = 'Браузер не поддерживает уведомления';
+                notificationBtn.style.display = 'none';
+            }
+            
+            createWorker();
+        };
+        
+        function createWorker() {
+            var workerCode = `
+                onmessage = function(e) {
+                    var startTime = new Date().getTime();
+                    var text = e.data;
+                    
+                    var words = text.split(/\\s+/);
+                    var totalWords = words.length;
+                    
+                    var unique = {};
+                    for (var i = 0; i < words.length; i++) {
+                        var word = words[i].toLowerCase();
+                        unique[word] = true;
+                    }
+                    var uniqueCount = Object.keys(unique).length;
+                    
+                    var endTime = new Date().getTime();
+                    var processTime = endTime - startTime;
+                    
+                    postMessage({
+                        total: totalWords,
+                        unique: uniqueCount,
+                        time: processTime
+                    });
+                };
+            `;
+            
+            var blob = new Blob([workerCode], {type: 'application/javascript'});
+            worker = new Worker(URL.createObjectURL(blob));
+            
+            worker.onmessage = function(e) {
+                var result = e.data;
+                
+                wordCount.textContent = result.total;
+                uniqueWords.textContent = result.unique;
+                time.textContent = result.time;
+                
+                sendToServer(result);
+                
+                showNotification(result);
+                
+                addMessage('Файл обработан! Слов: ' + result.total + ', уникальных: ' + result.unique);
+                
+                processBtn.disabled = false;
+                processBtn.textContent = 'Обработать файл';
+            };
+            
+            worker.onerror = function(error) {
+                console.log('Ошибка в Worker:', error);
+                addMessage('Ошибка при обработке файла');
+            };
+        }
+        
+        function sendToServer(data) {
+            console.log('Отправляю на сервер:', data);
+            
+            fetch('https://jsonplaceholder.typicode.com/posts', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    title: 'Результаты анализа',
+                    body: 'Слов: ' + data.total + ', уникальных: ' + data.unique,
+                    userId: 1
+                })
+            })
+            .then(function(response) {
+                return response.json();
+            })
+            .then(function(data) {
+                console.log('Успешно отправлено:', data);
+                addMessage('Результаты отправлены на сервер (ID: ' + data.id + ')');
+            })
+            .catch(function(error) {
+                console.log('Ошибка отправки:', error);
+                addMessage('Ошибка отправки на сервер');
+            });
+        }
+        
+        function showNotification(result) {
+            if (!notificationAllowed) return;
+            
+            if ('Notification' in window && Notification.permission === 'granted') {
+                var notification = new Notification('Анализ завершен!', {
+                    body: 'Найдено ' + result.total + ' слов, ' + result.unique + ' уникальных',
+                    icon: 'https://cdn-icons-png.flaticon.com/512/2991/2991148.png'
+                });
+            }
+        }
+        
+        function addMessage(text) {
+            var now = new Date();
+            var timeString = now.getHours() + ':' + now.getMinutes() + ':' + now.getSeconds();
+            
+            var messageDiv = document.createElement('div');
+            messageDiv.textContent = '[' + timeString + '] ' + text;
+            messageDiv.style.margin = '5px 0';
+            messageDiv.style.padding = '5px';
+            messageDiv.style.backgroundColor = '#f0f0f0';
+            
+            messagesDiv.appendChild(messageDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+        
+        function connectWebSocket() {
+            if (ws) return;
+            
+            addMessage('Подключаюсь к WebSocket...');
+            
+            ws = new WebSocket('wss://echo.websocket.events');
+            
+            ws.onopen = function() {
+                wsStatus.textContent = 'Подключено';
+                wsStatus.style.color = 'green';
+                connectBtn.disabled = true;
+                disconnectBtn.disabled = false;
+                addMessage('Подключено к WebSocket');
+                
+                setTimeout(function() {
+                    ws.send('Привет от загрузчика файлов!');
+                }, 1000);
+            };
+            
+            ws.onmessage = function(event) {
+                if (event.data.includes('echo.websocket.events')) return;
+                
+                addMessage('Получено: ' + event.data);
+            };
+            
+            ws.onerror = function(error) {
+                console.log('WebSocket ошибка:', error);
+                addMessage('Ошибка WebSocket');
+            };
+            
+            ws.onclose = function() {
+                ws = null;
+                wsStatus.textContent = 'Не подключено';
+                wsStatus.style.color = 'red';
+                connectBtn.disabled = false;
+                disconnectBtn.disabled = true;
+                addMessage('Отключено от WebSocket');
+            };
+        }
+        
+        function disconnectWebSocket() {
+            if (ws) {
+                ws.close();
+            }
+        }
+        
+        function requestNotificationPermission() {
+            if (!('Notification' in window)) {
+                notificationText.textContent = 'Браузер не поддерживает уведомления';
+                return;
+            }
+            
+            Notification.requestPermission().then(function(permission) {
+                if (permission === 'granted') {
+                    notificationAllowed = true;
+                    notificationText.textContent = 'Уведомления разрешены';
+                    notificationBtn.style.display = 'none';
+                } else {
+                    notificationText.textContent = 'Уведомления запрещены';
+                }
+            });
+        }
+        
+        function processFile() {
+            if (!fileText || !worker) {
+                alert('Сначала загрузите файл');
+                return;
+            }
+            
+            processBtn.disabled = true;
+            processBtn.textContent = 'Обработка...';
+            
+            addMessage('Начинаю обработку файла...');
+            
+            worker.postMessage(fileText);
+        }
+        
+        function clearAll() {
+            currentFile = null;
+            fileText = '';
+            fileInfo.style.display = 'none';
+            processBtn.disabled = true;
+            clearBtn.disabled = true;
+            
+            wordCount.textContent = '0';
+            uniqueWords.textContent = '0';
+            time.textContent = '0';
+            
+            fileInput.value = '';
+            
+            addMessage('Все очищено');
+        }
+        
+        fileInput.addEventListener('change', function(e) {
+            var file = e.target.files[0];
+            
+            if (!file || !file.name.endsWith('.txt')) {
+                alert('Выберите текстовый файл (.txt)');
+                return;
+            }
+            
+            currentFile = file;
+            
+            document.getElementById('filename').textContent = file.name;
+            document.getElementById('filesize').textContent = file.size;
+            fileInfo.style.display = 'block';
+            processBtn.disabled = false;
+            clearBtn.disabled = false;
+            
+            var reader = new FileReader();
+            
+            reader.onload = function(e) {
+                fileText = e.target.result;
+                addMessage('Файл загружен: ' + file.name);
+            };
+            
+            reader.onerror = function() {
+                alert('Ошибка чтения файла');
+                clearAll();
+            };
+            
+            reader.readAsText(file);
+        });
+        
+        dropArea.addEventListener('dragover', function(e) {
+            e.preventDefault();
+            dropArea.style.backgroundColor = '#e0e0e0';
+        });
+        
+        dropArea.addEventListener('dragleave', function() {
+            dropArea.style.backgroundColor = '';
+        });
+        
+        dropArea.addEventListener('drop', function(e) {
+            e.preventDefault();
+            dropArea.style.backgroundColor = '';
+            
+            var file = e.dataTransfer.files[0];
+            
+            if (!file || !file.name.endsWith('.txt')) {
+                alert('Перетащите текстовый файл (.txt)');
+                return;
+            }
+            
+            fileInput.files = e.dataTransfer.files;
+            
+            var event = new Event('change');
+            fileInput.dispatchEvent(event);
+        });
+        
+        processBtn.addEventListener('click', processFile);
+        clearBtn.addEventListener('click', clearAll);
+        connectBtn.addEventListener('click', connectWebSocket);
+        disconnectBtn.addEventListener('click', disconnectWebSocket);
+        notificationBtn.addEventListener('click', requestNotificationPermission);
+        
+        setTimeout(function() {
+            addMessage('Система готова. Перетащите текстовый файл.');
+        }, 1000);
+    </script>
+</body>
+</html>
